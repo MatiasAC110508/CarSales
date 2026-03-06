@@ -1,4 +1,7 @@
 const db = require('../config/db');
+const { Readable } = require('stream');
+const csv = require('csv-parser');
+const { error } = require('console');
 
 // CREATE: Add a new car to the inventory
 exports.createCar = async (req, res) => {
@@ -111,4 +114,73 @@ exports.deleteCar = async (req, res) => {
         }
         res.status(500).json({ error: 'Internal server error' });
     }
+};
+
+// MASSIVE IMPORT: Parse CSV and insert into database
+exports.importCarsFromCSV = async (req, res) => {
+    // 1. Check if a file was actually uploaded
+    if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded. Please attach a CSV file.' });
+    }
+    
+    const results = [];
+    const validationErrors = [];
+
+    // 2. Convert the raw fule Buffer in RAM into a readable stream
+    const stream = Readable.from(req.file.buffer);
+
+    // 3. Pipe the stream through the CSV parser
+    stream.pipe(csv()).on('data', (row) => {
+        // 4. Validation: Ensure the CSV has the required columns
+        if (!row.unique_plate || !row.make ||!row.model || !row.mileage) {
+            validationErrors.push(`Missing data in row: ${JSON.stringify(row)}`);
+        } else {
+            results.push(row)
+        }
+
+    }).on('end', async () => {
+        // 5. Massive Insertion with Duplicate Handling
+        try {
+            let insertedCount = 0;
+            let duplicatedCount = 0;
+
+            for (const car of results) {
+                // INSERT IGNORE tells MySQL to skip rows that violate the UNIQUE constraint
+                const query = `
+                INSERT IGNORE INTO cars (unique_plate, make, model, color, mileage)
+                VALUES (?, ?, ?, ?, ?)
+                `;
+
+                const [dbResult] = await db.query(query, [
+                    car.unique_plate,
+                    car.make,
+                    car.model,
+                    car.color || 'Unknown', // Fallback if color is blank
+                    car.mileage
+                ]);
+
+                // affectedRows is 1 if inserted, 0 if ignored (duplicate)
+                if (dbResult.affectedRows === 1) {
+                    insertedCount++;
+                } else {
+                    duplicatedCount++;
+                }
+            }
+
+            // 6. Send the final report back to the user
+            res.status(200).json({
+                message: 'Masive import completed successfully',
+                stats: {
+                    total_rows_processed: results.length,
+                    successfully_inserted: insertedCount,
+                    duplicates_skipped: duplicatedCount,
+                    validation_errors: validationErrors.length
+                },
+                errors: validationErrors
+            });
+        } catch (error) {
+            console.error('Database Error during import: ', error);
+            res.status(500).json({ error: 'Failed to process database insertion' });
+        }
+    });
 };

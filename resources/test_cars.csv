@@ -1,0 +1,4 @@
+unique_plate,make,model,color,mileage
+XYZ-123,Toyota,Corolla,Red,45000
+ABC-987,Honda,Civic,Blue,12000
+QWE-456,Ford,Mustang,,5000
